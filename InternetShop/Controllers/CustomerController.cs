@@ -1,139 +1,79 @@
-﻿using System.Security.Claims;
-using InternetShop.Attributes;
+﻿
+using System.Security.Claims;
 using InternetShop.Data;
 using InternetShop.Models;
 using InternetShop.Requests;
+using InternetShop.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
-namespace InternetShop.Controllers;
-
-[ApiController]
-[Route("api/[controller]")]
-public class CustomerController : ControllerBase
+namespace InternetShop.Controllers
 {
-    private readonly AppDbContext _db;
-
-    public CustomerController(AppDbContext db)
+    [ApiController]
+    [Route("api/[controller]")]
+    public class CustomerController : ControllerBase
     {
-        _db = db;
-    }
+        private readonly AppDbContext _db;
+        private readonly OrderService _orderService;
 
-    [RoleAuthorize("customer")]
-    [HttpGet("profile")]
-    public async Task<IActionResult> GetProfile()
-    {
-        var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
-        var user = await _db.Users
-            .Include(u => u.Addresses)
-            .Include(u => u.PaymentMethods)
-            .FirstOrDefaultAsync(u => u.Id == userId);
-
-        if (user == null) return NotFound();
-        return Ok(user);
-    }
-
-    [RoleAuthorize("customer")]
-    [HttpPut("profile")]
-    public async Task<IActionResult> UpdateProfile([FromBody] UpdateProfileRequest req)
-    {
-        var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
-        var user = await _db.Users.FindAsync(userId);
-        if (user == null) return NotFound();
-
-        user.FullName = req.FullName;
-        user.Phone = req.Phone;
-        user.UpdatedAt = DateTime.UtcNow;
-        await _db.SaveChangesAsync();
-        return Ok(user);
-    }
-
-    [RoleAuthorize("customer")]
-    [HttpPost("addresses")]
-    public async Task<IActionResult> AddAddress([FromBody] AddressRequest req)
-    {
-        var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
-        var address = new Address
+        public CustomerController(AppDbContext db, OrderService orderService)
         {
-            UserId = userId,
-            Street = req.Street,
-            City = req.City,
-            PostalCode = req.PostalCode,
-            Country = req.Country
-        };
-        _db.Addresses.Add(address);
-        await _db.SaveChangesAsync();
-        return Ok(address);
-    }
-
-    [RoleAuthorize("customer")]
-    [HttpPost("orders")]
-    public async Task<IActionResult> CreateOrder([FromBody] CreateOrderRequest req)
-    {
-        var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
-        var user = await _db.Users.FindAsync(userId);
-        if (user == null) return NotFound();
-
-        var order = new Order
-        {
-            UserId = userId,
-            DeliveryMethod = req.DeliveryMethod,
-            DeliveryAddress = req.DeliveryAddress,
-            Status = "pending",
-            CreatedAt = DateTime.UtcNow,
-            UpdatedAt = DateTime.UtcNow
-        };
-
-        decimal total = 0;
-        foreach (var item in req.Items)
-        {
-            var product = await _db.Products.FindAsync(item.ProductId);
-            if (product == null || product.Stock < item.Quantity)
-                return BadRequest("Недостаточно товара на складе");
-
-            total += product.Price * item.Quantity;
-            product.Stock -= item.Quantity;
-
-            order.Items.Add(new OrderItem
-            {
-                ProductId = item.ProductId,
-                Quantity = item.Quantity,
-                PriceAtOrder = product.Price
-            });
+            _db = db;
+            _orderService = orderService;
         }
 
-        order.TotalAmount = total;
-        _db.Orders.Add(order);
-        await _db.SaveChangesAsync();
+        [HttpPost("orders")]
+        public async Task<IActionResult> CreateOrder([FromBody] CreateOrderRequest req)
+        {
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0";
 
-        return Ok(order);
-    }
+            var user = await _db.Users.FindAsync(userId);
+            if (user == null) return NotFound();
 
-    [RoleAuthorize("customer")]
-    [HttpGet("orders")]
-    public async Task<IActionResult> GetOrders()
-    {
-        var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
-        var orders = await _db.Orders
-            .Include(o => o.Items)
-            .Where(o => o.UserId == userId)
-            .ToListAsync();
-        return Ok(orders);
-    }
+            var order = new Order
+            {
+                UserId = userId,
+                DeliveryMethod = req.DeliveryMethod,
+                DeliveryAddress = req.DeliveryAddress,
+                Status = "pending",
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            };
 
-    [RoleAuthorize("customer")]
-    [HttpDelete("orders/{orderId}")]
-    public async Task<IActionResult> CancelOrder(int orderId)
-    {
-        var userId = int.Parse(User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0");
-        var order = await _db.Orders.FindAsync(orderId);
-        if (order == null || order.UserId != userId) return NotFound();
+            _db.Orders.Add(order);
+            await _db.SaveChangesAsync();
 
-        if (order.Status != "pending")
-            return BadRequest("Можно отменить только заказы со статусом 'pending'");
+            return Ok(order);
+        }
 
-        order.Status = "cancelled";
-        await _db.SaveChangesAsync();
-        return Ok();
+        [HttpGet("orders")]
+        public async Task<IActionResult> GetOrders()
+        {
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0";
+
+            var orders = await _db.Orders
+                .Where(o => o.UserId == userId)
+                .Include(o => o.Items)
+                .ToListAsync();
+
+            return Ok(orders);
+        }
+
+        [HttpDelete("orders/{orderId}")]
+        public async Task<IActionResult> CancelOrder(int orderId)
+        {
+            var userId = User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "0";
+
+            var order = await _db.Orders
+                .Where(o => o.Id == orderId && o.UserId == userId)
+                .FirstOrDefaultAsync();
+
+            if (order == null) return NotFound();
+
+            _db.Orders.Remove(order);
+            await _db.SaveChangesAsync();
+
+            return Ok();
+        }
     }
 }
